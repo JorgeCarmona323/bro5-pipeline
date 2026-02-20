@@ -1,0 +1,26 @@
+name: bro5
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  # Core chemistry
+  - rdkit
+  - pandas
+  - numpy
+  - matplotlib
+  - scipy
+  - scikit-learn
+  # LCMS analysis (04_validation)
+  - pymzml
+  - peakutils
+  # Jupyter
+  - jupyter
+  - ipykernel
+  - pip
+  - pip:
+      # UMAP analysis (03_umap_analysis)
+      - umap-learn
+      - mapchiral
+      - pynndescent
+      - numba

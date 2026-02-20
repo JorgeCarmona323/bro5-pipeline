@@ -1,0 +1,44 @@
+Reactant Value Extraction Summary
+==================================================
+
+Input file: C:\Users\Admin\Documents\Hu Lab\DataWarrior\Cyclized_Hits_DEL18\DEL18_Cyclized Hits.csv
+Output file: C:\Users\Admin\Documents\Hu Lab\Code\Python\rdkit\Data\2026-01-22\34_Hit_values_extracted.csv
+Total rows processed: 34
+
+ALL EXTRACTED DATA:
+==================================================
+   Reactant-ID 1 Reactant_Value_1 Reactant-ID 2 Reactant_Value_2 Reactant-ID 3 Reactant_Value_3 Reactant-ID 4 Reactant_Value_4
+0           X1_1                1          X2_8                8          X3_9                9          X4_2                2
+1           X1_1                1          X2_9                9          X3_1                1          X4_5                5
+2           X1_2                2          X2_9                9          X3_4                4         X4_12               12
+3           X1_2                2          X2_9                9          X3_9                9          X4_8                8
+4           X1_2                2         X2_12               12          X3_1                1          X4_9                9
+5           X1_2                2         X2_12               12          X3_3                3          X4_7                7
+6           X1_2                2         X2_12               12          X3_4                4          X4_8                8
+7           X1_2                2         X2_14               14          X3_1                1          X4_1                1
+8           X1_3                3         X2_11               11         X3_10               10         X4_11               11
+9           X1_3                3         X2_11               11          X3_4                4          X4_9                9
+10          X1_3                3         X2_11               11          X3_5                5          X4_5                5
+11          X1_3                3         X2_12               12         X3_10               10          X4_6                6
+12          X1_3                3         X2_14               14          X3_8                8          X4_3                3
+13          X1_3                3         X2_12               12          X3_8                8         X4_12               12
+14          X1_3                3          X2_8                8          X3_1                1          X4_3                3
+15          X1_3                3          X2_8                8          X3_8                8         X4_12               12
+16          X1_4                4          X2_8                8          X3_3                3         X4_10               10
+17          X1_4                4         X2_11               11          X3_1                1          X4_7                7
+18          X1_4                4         X2_12               12          X3_7                7          X4_7                7
+19          X1_5                5         X2_11               11          X3_3                3         X4_12               12
+20          X1_6                6          X2_5                5          X3_8                8         X4_12               12
+21          X1_7                7          X2_4                4          X3_9                9          X4_1                1
+22          X1_8                8          X2_2                2          X3_8                8          X4_8                8
+23          X1_8                8          X2_4                4          X3_4                4         X4_12               12
+24          X1_8                8         X2_13               13          X3_9                9         X4_10               10
+25          X1_9                9          X2_5                5          X3_2                2         X4_11               11
+26          X1_9                9          X2_5                5          X3_4                4          X4_8                8
+27          X1_9                9          X2_7                7          X3_4                4          X4_7                7
+28         X1_10               10          X2_5                5          X3_7                7         X4_13               13
+29         X1_10               10          X2_5                5          X3_8                8         X4_12               12
+30         X1_10               10         X2_13               13          X3_4                4         X4_12               12
+31         X1_10               10         X2_13               13          X3_7                7          X4_7                7
+32         X1_10               10         X2_13               13         X3_10               10          X4_6                6
+33          X1_1                1          X2_6                6          X3_4                4          X4_7                7

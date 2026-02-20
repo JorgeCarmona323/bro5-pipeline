@@ -1,0 +1,12 @@
+Total matches: 6
+MATCH: DOPC 3-12-8-12 R Isomer | C#CCCC(=O)N[C@H]1CSCc2ccccc2CSC[C@@H](C(N)=O)NC(=O)[C@H](c2cccs2)NC(=O)[C@H](CO)NC(=O)[C@@H]2CCN2C(=O)[C@H](CO)NC1=O -> library rows 19290
+MATCH: DOPC 2-9-9-8 | C#CCCC(=O)N[C@H]1CSCc2ccccc2CSC[C@@H](C(N)=O)NC(=O)C[C@H](c2ccco2)NC(=O)[C@H](CC(C)C)N(C)C(=O)CNC(=O)CN(C)C1=O -> library rows 9080
+MATCH: DOPC 5-8-4-8<NL> | C#CCCC(=O)N[C@H]1CSCc2ccccc2CSC[C@@H](C(N)=O)NC(=O)[C@H](Cc2c[nH]c3ccccc23)NC(=O)CN(C)C(=O)[C@@H]2CCCCN2C(=O)CN(C)C1=O -> library rows 14750
+MATCH: DOPC 1-6-4-7 | C#CCCC(=O)N[C@H]1CSCc2ccccc2CSC[C@@H](C(N)=O)NC(=O)[C@H](CS(=O)(=O)O)NC(=O)[C@@H]([C@H](C)O)NC(=O)[C@@H]2CCCCN2C(=O)CNC1=O -> library rows 12509
+MATCH: Brain 6-4-4-13 | C#CCCC(=O)N[C@H]1CSCc2ccccc2CSC[C@@H](C(N)=O)NC(=O)C[C@@H](c2cccc3ccccc23)NC(=O)[C@H](C)NC(=O)[C@@H]2CCCCN2C(=O)[C@@H](CO)NC1=O -> library rows 6355
+MATCH: DOPC 3-12-8-12 S Isomer | C#CCCC(=O)N[C@H]1CSCc2ccccc2CSC[C@@H](C(N)=O)NC(=O)[C@@H](c2cccs2)NC(=O)[C@H](CO)NC(=O)[C@@H]2CCN2C(=O)[C@H](CO)NC1=O -> library rows 11450
+
+Not found hits (3):
+NOT FOUND: E. Coli 3-10-4-3 R Isomer | C#CCCC(=O)C[C@H]1CSCc2ccccc2CSC[C@@H](C(N)=O)NC(=O)[C@H](c2cccs2)NC(=O)[C@@H](CC(C)C)N(C)C(=O)[C@@H]2CCCCN2C(=O)[C@H](Cc2ccccc2)N(C)C1=O
+NOT FOUND: E. Coli 5-14-10-8 | C#CCCC(=O)C[C@H]1CSCc2ccccc2CSC[C@@H](C(N)=O)NC(=O)[C@H](Cc2c[nH]c3ccccc23)NC(=O)[C@H](COC)NC(=O)CN(C)C(=O)CN(C)C1=O
+NOT FOUND: E. Coli 3-10-4-3 S Isomer | C#CCCC(=O)C[C@H]1CSCc2ccccc2CSC[C@@H](C(N)=O)NC(=O)[C@@H](c2cccs2)NC(=O)[C@@H](CC(C)C)N(C)C(=O)[C@@H]2CCCCN2C(=O)[C@H](Cc2ccccc2)N(C)C1=O
