@@ -1,3 +1,6 @@
+# Temporary Windows data staging folder (delete after migration)
+_windows_data/
+
 # Data files (add to data/ manually, do not commit large files)
 data/building_blocks/*
 data/lcms/*

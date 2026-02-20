@@ -31,8 +31,8 @@ LINKER_SMILES = "C1=CC=C(C(=C1)CBr)CBr"
 # Output directory
 OUTPUT_DIR = _REPO_ROOT / "outputs" / "csv"
 
-# Input instruction CSV (drop file in data/libraries/)
-INPUT_INSTRUCTIONS_CSV = _REPO_ROOT / "data" / "libraries" / "34_Hit_values_extracted.csv"
+# Input instruction CSV (drop file in data/libraries/YYYY-MM-DD/)
+INPUT_INSTRUCTIONS_CSV = _REPO_ROOT / "data" / "libraries" / "2026-01-22" / "34_Hit_values_extracted.csv"
 
 
 # =============================================================================

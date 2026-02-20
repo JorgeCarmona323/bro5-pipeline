@@ -33,9 +33,15 @@ from scipy.stats import spearmanr, rankdata
 # ==========================================================
 # USER CONFIG (EDIT THIS SECTION)
 # ==========================================================
-INPUT_CSV = "C:\\Users\\Admin\\Documents\\Hu Lab\\Code\\Python\\rdkit\\Data\\2026-01-09\\canonicalized_master_macrocycles_2D_Descriptors_20260106.csv"
-OUTPUT_DIR = "C:\\Users\\Admin\\Documents\\Hu Lab\\Code\\Python\\rdkit\\Scripts\\UMAP_scripts\\runs\\2026-01-29\\Output"
-FIG_DIR = "C:\\Users\\Admin\\Documents\\Hu Lab\\Code\\Python\\rdkit\\Scripts\\UMAP_scripts\\runs\\2026-01-29\\Figures"
+from pathlib import Path
+import datetime
+
+_REPO_ROOT = Path(__file__).parent.parent
+_RUN_DATE = datetime.date.today().isoformat()   # e.g. 2026-02-19
+
+INPUT_CSV   = _REPO_ROOT / "data" / "libraries" / "2026-01-29" / "canonicalized_master_macrocycles_2D_Descriptors_FINAL_20260129.csv"
+OUTPUT_DIR  = _REPO_ROOT / "outputs" / "umap" / _RUN_DATE / "Output"
+FIG_DIR     = _REPO_ROOT / "outputs" / "umap" / _RUN_DATE / "Figures"
 
 SMILES_COL = "Smiles"
 SOURCE_COL = "Source"
