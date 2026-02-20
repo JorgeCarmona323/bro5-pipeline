@@ -19,17 +19,20 @@ from pathlib import Path
 # USER CONFIGURATION
 # =============================================================================
 
-# Cleaned master building blocks CSV
-BUILDING_BLOCKS_CSV = r"C:\Users\Admin\Documents\Hu Lab\Code\Python\rdkit\Scripts\Macrocycle_Enumeration\Macrocycle_Enumeration_Inputs\Enumeration_Deprotected_Data_20260129\Master_Building_Blocks_Cleaned.csv"
+# Resolve paths relative to this script's location
+_REPO_ROOT = Path(__file__).parent.parent
+
+# Cleaned master building blocks CSV (drop file in data/building_blocks/)
+BUILDING_BLOCKS_CSV = _REPO_ROOT / "data" / "building_blocks" / "Master_Building_Blocks_Cleaned.csv"
 
 # o-Dibromoxylene linker SMILES
 LINKER_SMILES = "C1=CC=C(C(=C1)CBr)CBr"
 
 # Output directory
-OUTPUT_DIR = r"C:\Users\Admin\Documents\Hu Lab\Code\Python\rdkit\Scripts\Macrocycle_Enumeration\outputs"
+OUTPUT_DIR = _REPO_ROOT / "outputs" / "csv"
 
-# Input instruction CSV (for batch enumeration)
-INPUT_INSTRUCTIONS_CSV = r"C:\Users\Admin\Documents\Hu Lab\Code\Python\rdkit\Data\2026-01-22\34_Hit_values_extracted.csv"
+# Input instruction CSV (drop file in data/libraries/)
+INPUT_INSTRUCTIONS_CSV = _REPO_ROOT / "data" / "libraries" / "34_Hit_values_extracted.csv"
 
 
 # =============================================================================
