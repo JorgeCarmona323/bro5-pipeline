@@ -200,9 +200,11 @@ def _minmax_norm(values: np.ndarray, invert: bool = False) -> np.ndarray:
 
 def load_mordred() -> tuple[pd.DataFrame, pd.DataFrame]:
     print(f"\n[Load] Mordred: {MORDRED_SCALED_CSV.name}")
-    df   = pd.read_csv(MORDRED_SCALED_CSV)
+    df   = pd.read_csv(MORDRED_SCALED_CSV, low_memory=False)
     meta = df[[c for c in [SMILES_COL, SOURCE_COL] if c in df.columns]].copy()
-    X    = df[[c for c in df.columns if c not in meta.columns]].astype(float)
+    # select only numeric columns — Mordred emits some string/bool cols that survive to CSV
+    num_cols = df.select_dtypes(include="number").columns
+    X    = df[num_cols].astype(float)
     print(f"   {X.shape[0]:,} × {X.shape[1]}")
     return meta, X
 
