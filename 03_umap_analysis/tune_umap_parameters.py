@@ -4,15 +4,21 @@ UMAP/HDBSCAN Parameter Selection Report
 ========================================
 
 Produces a reproducible, evidence-based ranking of UMAP parameter sets for
-the Mordred and MAPchiral branches.  The goal is to identify the smallest
-embedding dimensionality and simplest parameter set that yields stable,
-high-quality clustering — not to maximise any single metric blindly.
+the 2D physicochemical, Mordred, and MAPchiral branches.  The goal is to
+identify the smallest embedding dimensionality and simplest parameter set that
+yields stable, high-quality clustering — not to maximise any single metric
+blindly.
 
-Sweep grid (27 combinations per branch)
-  n_components : [5, 10, 15]
-  n_neighbors  : [20, 40, 60]
-  min_dist     : [0.0, 0.1, 0.2]
-Fixed: metric (cosine / minhash_distance), random_state
+Sweep grid
+  2D physicochemical (27 combinations)
+    n_components : [2, 3, 4]
+    n_neighbors  : [10, 20, 30]
+    min_dist     : [0.0, 0.1, 0.2]
+  Mordred / MAPchiral (27 combinations each)
+    n_components : [5, 10, 15]
+    n_neighbors  : [20, 40, 60]
+    min_dist     : [0.0, 0.1, 0.2]
+Fixed: metric (euclidean / cosine / minhash_distance), random_state
 
 Metrics recorded
 ----------------
@@ -70,6 +76,7 @@ from numba import njit
 from sklearn.cluster import HDBSCAN
 from sklearn.manifold import trustworthiness as sklearn_trustworthiness
 from sklearn.metrics import adjusted_rand_score, pairwise_distances
+from sklearn.preprocessing import StandardScaler
 import umap
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -98,13 +105,29 @@ CACHE_DIR  = OUTPUT_DIR / "cache"
 MORDRED_SCALED_CSV = _REPO_ROOT / "outputs" / "mordred"   / RUN_TAG / "mordred_filtered_scaled.csv"
 MAPC_FPS_NPY       = _REPO_ROOT / "outputs" / "mapchiral" / RUN_TAG / "mapchiral_fingerprints.npy"
 MAPC_META_CSV      = _REPO_ROOT / "outputs" / "mapchiral" / RUN_TAG / "mapchiral_metadata.csv"
+INPUT_2D_CSV       = (_REPO_ROOT / "data" / "libraries" / "2026-01-29"
+                      / "canonicalized_master_macrocycles_2D_Descriptors_FINAL_20260129.csv")
 
 SMILES_COL = "Smiles"
 SOURCE_COL = "Source"
 
+DESC_2D_COLS = [
+    "Total Molweight",
+    "cLogP",
+    "H-Acceptors",
+    "H-Donors",
+    "Polar Surface Area",
+    "Rotatable Bonds",
+]
+IQR_MULTIPLIER_2D  = 1.5
+CONDITION_D_SOURCES = {"Literature", "34_Hits", "Hit"}
+
 # ------------------------------------------------------------------
-# Sweep grid
+# Sweep grids — 2D branch uses smaller n_components / n_neighbors
 # ------------------------------------------------------------------
+SWEEP_N_COMPONENTS_2D = [2, 3, 4]
+SWEEP_N_NEIGHBORS_2D  = [10, 20, 30]
+
 SWEEP_N_COMPONENTS = [5, 10, 15]
 SWEEP_N_NEIGHBORS  = [20, 40, 60]
 SWEEP_MIN_DIST     = [0.0, 0.1, 0.2]
@@ -198,6 +221,31 @@ def _minmax_norm(values: np.ndarray, invert: bool = False) -> np.ndarray:
 # LOAD DATA
 # ===========================================================================
 
+def iqr_clip(df: pd.DataFrame, multiplier: float) -> pd.DataFrame:
+    q1  = df.quantile(0.25)
+    q3  = df.quantile(0.75)
+    iqr = q3 - q1
+    return df.clip(lower=q1 - multiplier * iqr,
+                   upper=q3 + multiplier * iqr, axis=1)
+
+
+def load_2d() -> tuple[pd.DataFrame, pd.DataFrame]:
+    print(f"\n[Load] 2D physicochemical: {INPUT_2D_CSV.name}")
+    df = pd.read_csv(INPUT_2D_CSV)
+    df = df[df[SOURCE_COL].isin(CONDITION_D_SOURCES)].reset_index(drop=True)
+    df = df.dropna(subset=DESC_2D_COLS).reset_index(drop=True)
+    meta = df[[SMILES_COL, SOURCE_COL]].copy()
+    X    = df[DESC_2D_COLS].astype(float)
+    X    = iqr_clip(X, IQR_MULTIPLIER_2D)
+    X_sc = pd.DataFrame(
+        StandardScaler().fit_transform(X.values),
+        columns=DESC_2D_COLS,
+        index=meta.index,
+    )
+    print(f"   {X_sc.shape[0]:,} × {X_sc.shape[1]}")
+    return meta, X_sc
+
+
 def load_mordred() -> tuple[pd.DataFrame, pd.DataFrame]:
     print(f"\n[Load] Mordred: {MORDRED_SCALED_CSV.name}")
     df   = pd.read_csv(MORDRED_SCALED_CSV, low_memory=False)
@@ -253,6 +301,8 @@ def run_combination(
     params = dict(n_components=nc, n_neighbors=nn, min_dist=md, random_state=RANDOM_STATE)
     if branch == "mapchiral":
         params["metric"] = minhash_distance
+    elif branch == "2d":
+        params["metric"] = "euclidean"
     else:
         params["metric"] = "cosine"
 
@@ -344,7 +394,12 @@ def compute_trustworthiness(
         X_s = X.iloc[idx].values
 
     try:
-        metric = minhash_distance if branch == "mapchiral" else "cosine"
+        if branch == "mapchiral":
+            metric = minhash_distance
+        elif branch == "2d":
+            metric = "euclidean"
+        else:
+            metric = "cosine"
         D_orig = pairwise_distances(X_s, metric=metric)
         trust  = float(sklearn_trustworthiness(
             D_orig, emb_s,
@@ -411,14 +466,28 @@ def compute_sanity_score(
 # FULL SWEEP
 # ===========================================================================
 
+def _branch_sweep_grid(branch: str) -> list:
+    if branch == "2d":
+        return list(product(SWEEP_N_COMPONENTS_2D, SWEEP_N_NEIGHBORS_2D, SWEEP_MIN_DIST))
+    return list(product(SWEEP_N_COMPONENTS, SWEEP_N_NEIGHBORS, SWEEP_MIN_DIST))
+
+
+def _branch_metric_label(branch: str) -> str:
+    if branch == "mapchiral":
+        return "minhash_distance"
+    if branch == "2d":
+        return "euclidean"
+    return "cosine"
+
+
 def run_sweep(X, branch: str) -> dict:
-    """Run all 27 combinations for one branch. Returns dict keyed by (nc,nn,md)."""
-    combos = list(product(SWEEP_N_COMPONENTS, SWEEP_N_NEIGHBORS, SWEEP_MIN_DIST))
+    """Run all combinations for one branch. Returns dict keyed by (nc,nn,md)."""
+    combos = _branch_sweep_grid(branch)
     total  = len(combos)
 
     print(f"\n{'='*62}")
     print(f"  Sweep: {branch.upper()}  ({total} combinations)")
-    metric_label = "minhash_distance" if branch == "mapchiral" else "cosine"
+    metric_label = _branch_metric_label(branch)
     print(f"  Metric: {metric_label}  |  HDBSCAN min_cluster_size={HDBSCAN_MIN_CLUSTER_SIZE}")
     print(f"{'='*62}")
 
@@ -548,7 +617,7 @@ def score_all(results: dict) -> dict:
 # ===========================================================================
 
 def build_summary_df(results: dict, branch: str) -> pd.DataFrame:
-    metric_label = "minhash_distance" if branch == "mapchiral" else "cosine"
+    metric_label = _branch_metric_label(branch)
     rows = []
     for (nc, nn, md), r in results.items():
         rows.append({
@@ -660,7 +729,12 @@ def _get_2d_embedding(X, branch: str, nn: int, md: float) -> np.ndarray:
     if emb_path.exists():
         return np.load(emb_path)
     params = dict(n_components=2, n_neighbors=nn, min_dist=md, random_state=RANDOM_STATE)
-    params["metric"] = minhash_distance if branch == "mapchiral" else "cosine"
+    if branch == "mapchiral":
+        params["metric"] = minhash_distance
+    elif branch == "2d":
+        params["metric"] = "euclidean"
+    else:
+        params["metric"] = "cosine"
     t0  = time.time()
     emb = umap.UMAP(**params).fit_transform(
         X if isinstance(X, np.ndarray) else X.values
@@ -764,7 +838,7 @@ def write_report(
     all_nan_dbcv: bool,
 ) -> None:
     selected = top3[0]
-    metric   = "minhash_distance" if branch == "mapchiral" else "cosine"
+    metric   = _branch_metric_label(branch)
 
     W = dict(dbcv=W_DBCV, persistence=W_PERSISTENCE, ari=W_ARI,
              trust=W_TRUST, sanity=W_SANITY)
@@ -852,6 +926,9 @@ def write_report(
         )
 
     # Parameter sensitivity analysis
+    nc_grid = SWEEP_N_COMPONENTS_2D if branch == "2d" else SWEEP_N_COMPONENTS
+    nn_grid = SWEEP_N_NEIGHBORS_2D  if branch == "2d" else SWEEP_N_NEIGHBORS
+
     lines += [
         "",
         "=" * 72,
@@ -860,7 +937,7 @@ def write_report(
         "",
         "--- Effect of n_components on composite score (mean across nn/md) ---",
     ]
-    for nc in SWEEP_N_COMPONENTS:
+    for nc in nc_grid:
         subset    = df[df["n_components"] == nc]
         mean_sc   = subset["composite_score"].mean()
         mean_ari  = subset["mean_neighbor_ari"].mean()
@@ -871,7 +948,7 @@ def write_report(
         )
 
     lines += ["", "--- Effect of n_neighbors (mean across nc/md) ---"]
-    for nn in SWEEP_N_NEIGHBORS:
+    for nn in nn_grid:
         subset   = df[df["n_neighbors"] == nn]
         mean_sc  = subset["composite_score"].mean()
         mean_ncl = subset["n_clusters"].mean()
@@ -952,12 +1029,13 @@ def main() -> None:
     fig_dir = OUTPUT_DIR / "figures"
     fig_dir.mkdir(parents=True, exist_ok=True)
 
-    n_combos = len(SWEEP_N_COMPONENTS) * len(SWEEP_N_NEIGHBORS) * len(SWEEP_MIN_DIST)
+    n_combos_2d  = len(SWEEP_N_COMPONENTS_2D) * len(SWEEP_N_NEIGHBORS_2D) * len(SWEEP_MIN_DIST)
+    n_combos_hi  = len(SWEEP_N_COMPONENTS)    * len(SWEEP_N_NEIGHBORS)    * len(SWEEP_MIN_DIST)
 
     print("=" * 72)
     print("UMAP/HDBSCAN PARAMETER SELECTION")
-    print(f"  Branches    : Mordred (cosine), MAPchiral (minhash_distance)")
-    print(f"  Combinations: {n_combos} per branch  ({2 * n_combos} total)")
+    print(f"  Branches    : 2D physicochemical (euclidean), Mordred (cosine), MAPchiral (minhash_distance)")
+    print(f"  Combinations: {n_combos_2d} (2D)  +  {n_combos_hi} (Mordred)  +  {n_combos_hi} (MAPchiral)")
     print(f"  DBCV        : {'available (hdbscan pkg)' if HAS_DBCV else 'UNAVAILABLE — pip install hdbscan'}")
     print(f"  Trust sample: {N_TRUST_SAMPLE} molecules")
     print(f"  Cache       : {CACHE_DIR}")
@@ -966,7 +1044,7 @@ def main() -> None:
 
     t_total = time.time()
 
-    for branch, load_fn in [("mordred", load_mordred), ("mapchiral", load_mapchiral)]:
+    for branch, load_fn in [("2d", load_2d), ("mordred", load_mordred), ("mapchiral", load_mapchiral)]:
         meta, X = load_fn()
 
         results = run_sweep(X, branch)
@@ -986,7 +1064,7 @@ def main() -> None:
     print(f"\n{'='*72}")
     print("FINAL RECOMMENDATIONS")
     print(f"{'='*72}")
-    for branch in ["mordred", "mapchiral"]:
+    for branch in ["2d", "mordred", "mapchiral"]:
         df   = pd.read_csv(OUTPUT_DIR / f"{branch}_top_candidates.csv")
         best = df.iloc[0]
         print(f"  {branch.upper():12}: "
