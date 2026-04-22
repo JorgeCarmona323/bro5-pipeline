@@ -1,7 +1,7 @@
 """
 analyse_chemical_space.py
-Chemical Space Analysis — UMAP + HDBSCAN + K-Medoids
-=====================================================
+Chemical Space Analysis — UMAP + HDBSCAN + Ward / K-Medoids
+============================================================
 
 Overview
 --------
@@ -14,8 +14,11 @@ analysis pipeline:
        - HDBSCAN at each dimensionality
        - Select smallest n_components where cluster structure is stable
   3. Final UMAP (nD, selected dimensionality) — Mordred + MAPchiral
-  4. HDBSCAN on nD embeddings
-  5. K-Medoids on nD embeddings
+  4. HDBSCAN on nD embeddings (all branches)
+  5. Secondary clustering per branch:
+       - 2D:        HDBSCAN only (6-feature panel, no secondary)
+       - Mordred:   Ward hierarchical (k selected by silhouette sweep)
+       - MAPchiral: K-Medoids k=15 (confirmed by Gap Statistic, prior run)
 
 Why separate 2D from clustering dimensionality
 ----------------------------------------------
@@ -77,8 +80,11 @@ import matplotlib.patches as mpatches
 import numpy as np
 import pandas as pd
 from numba import njit
-from sklearn.cluster import HDBSCAN
-from sklearn.metrics import silhouette_score
+import hdbscan as hdbscan_pkg
+from hdbscan import validity as hdbscan_validity
+from scipy.cluster.hierarchy import linkage, fcluster, dendrogram, cophenet
+from scipy.spatial.distance import pdist
+from sklearn.metrics import silhouette_score, davies_bouldin_score
 from sklearn.preprocessing import StandardScaler
 import umap
 
@@ -99,7 +105,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 _REPO_ROOT = Path(__file__).parent.parent
 
-RUN_TAG    = "2026-04-06"
+RUN_TAG    = "2026-04-06"   # update to today's date before each new run
 OUTPUT_DIR = _REPO_ROOT / "outputs" / "analysis" / RUN_TAG
 
 # Must match the DATA_CONDITION used in both compute scripts
@@ -133,15 +139,14 @@ HIT_ID_COL    = "Hit_ID"
 HIGHLIGHT_COL = "Highlight_ID"
 
 # Curated 2D descriptor panel — preserved as-is, no filtering
+# Note: cLogS and Aromatic Rings are not present in the source CSV
 DESC_2D_COLS = [
     "Total Molweight",
     "cLogP",
-    "cLogS",
     "H-Acceptors",
     "H-Donors",
     "Polar Surface Area",
     "Rotatable Bonds",
-    "Aromatic Rings",
 ]
 
 IQR_MULTIPLIER_2D = 1.5
@@ -168,42 +173,55 @@ UMAP_BASE_PARAMS = {
         random_state = RANDOM_STATE,
     ),
     "mordred": dict(
-        n_neighbors  = 20,
-        min_dist     = 0.20,
+        n_neighbors  = 60,
+        min_dist     = 0.1,
         metric       = "cosine",
         random_state = RANDOM_STATE,
     ),
     # MAPchiral: metric set to minhash_distance callable at runtime
     "mapchiral": dict(
-        n_neighbors  = 20,
-        min_dist     = 0.20,
+        n_neighbors  = 40,
+        min_dist     = 0.1,
         random_state = RANDOM_STATE,
     ),
 }
 
 # ------------------------------------------------------------------
 # HDBSCAN (on nD UMAP embeddings, Euclidean)
+# min_cluster_size per branch — selected from mcs sweep
 # ------------------------------------------------------------------
-HDBSCAN_MIN_CLUSTER_SIZE = 50
-HDBSCAN_MIN_SAMPLES      = 10
+HDBSCAN_MIN_CLUSTER_SIZE = {
+    "2d":        50,    # 2D branch: mcs=50 retained (low DBCV space, enrichment preferred)
+    "mordred":   80,    # sweep-selected: 35 clusters, DBCV=+0.511, sil=+0.768
+    "mapchiral": 180,   # sweep-selected: 16 clusters, DBCV=+0.463 (k-medoids k=15 used for figures)
+}
+HDBSCAN_MIN_SAMPLES = 10
 
 # ------------------------------------------------------------------
-# K-Medoids (on nD UMAP embeddings, Euclidean)
+# Ward hierarchical clustering (Mordred branch only)
+# k selected by silhouette sweep; dendrogram saved for inspection
 # ------------------------------------------------------------------
-K_MEDOIDS      = 8
-K_MEDOIDS_INIT = "k-medoids++"
+WARD_K_MAX  = 100  # upper bound of silhouette sweep; true peak confirmed at k=64
+
+# ------------------------------------------------------------------
+# K-Medoids (MAPchiral branch only)
+# k=15 confirmed by Gap Statistic in prior run — no re-sweep needed
+# ------------------------------------------------------------------
+K_MEDOIDS_K_FIXED = 15             # confirmed optimal k for MAPchiral
+K_MEDOIDS_N_INIT  = 20             # multiple initializations at fixed k
+K_MEDOIDS_INIT    = "k-medoids++"
 
 # ------------------------------------------------------------------
 # Figure colors
 # ------------------------------------------------------------------
-COLOR_LITERATURE = "#D0D0D0"
+COLOR_LITERATURE = "#606060"
 COLOR_LIBRARY    = "#1F77B4"
 COLOR_34HITS     = "#E41A1C"
 COLOR_HIT        = "#FF7F00"
 
 DRAW_ORDER = ["Literature", "Library", "34_Hits", "Hit"]
 SOURCE_STYLE = {
-    "Literature": (COLOR_LITERATURE, 4,  0.25),
+    "Literature": (COLOR_LITERATURE, 4,  0.45),
     "Library":    (COLOR_LIBRARY,    4,  0.15),
     "34_Hits":    (COLOR_34HITS,     30, 0.90),
     "Hit":        (COLOR_HIT,        40, 1.00),
@@ -416,7 +434,7 @@ def sweep_dimensionality(
     sweep = {}
     for nc in SWEEP_COMPONENTS:
         emb    = run_umap(X, nc, base_params, branch)
-        labels = _run_hdbscan_internal(emb)
+        labels = _run_hdbscan_internal(emb, branch)
         m      = _hdbscan_metrics(labels)
         sweep[nc] = {"embedding": emb, "labels": labels, "metrics": m}
         print(f"   n_components={nc:>2}  →  "
@@ -434,10 +452,10 @@ def sweep_dimensionality(
     return selected, sweep
 
 
-def _run_hdbscan_internal(embedding: np.ndarray) -> np.ndarray:
-    """HDBSCAN on an embedding — used internally during sweep."""
-    return HDBSCAN(
-        min_cluster_size = HDBSCAN_MIN_CLUSTER_SIZE,
+def _run_hdbscan_internal(embedding: np.ndarray, branch: str) -> np.ndarray:
+    """HDBSCAN on an embedding — used internally during dimensionality sweep."""
+    return hdbscan_pkg.HDBSCAN(
+        min_cluster_size = HDBSCAN_MIN_CLUSTER_SIZE[branch],
         min_samples      = HDBSCAN_MIN_SAMPLES,
         metric           = "euclidean",
     ).fit_predict(embedding)
@@ -471,7 +489,7 @@ def _write_sweep_report(
         "=" * 62,
         f"DIMENSIONALITY SWEEP REPORT — {branch.upper()}",
         "=" * 62,
-        f"HDBSCAN min_cluster_size : {HDBSCAN_MIN_CLUSTER_SIZE}",
+        f"HDBSCAN min_cluster_size : {HDBSCAN_MIN_CLUSTER_SIZE[branch]}",
         f"HDBSCAN min_samples      : {HDBSCAN_MIN_SAMPLES}",
         f"Stability criterion      : |Δclusters| <= {CLUSTER_DELTA}  "
         f"AND  |Δnoise_frac| <= {NOISE_DELTA}",
@@ -504,47 +522,256 @@ def _write_sweep_report(
 # HDBSCAN (final, on nD embedding)
 # ===========================================================================
 
-def run_hdbscan(embedding: np.ndarray, branch: str) -> np.ndarray:
-    m = _hdbscan_metrics(
-        HDBSCAN(
-            min_cluster_size = HDBSCAN_MIN_CLUSTER_SIZE,
-            min_samples      = HDBSCAN_MIN_SAMPLES,
-            metric           = "euclidean",
-        ).fit_predict(embedding)
-    )
-    # Re-run to get labels (above was just for display)
-    labels = HDBSCAN(
-        min_cluster_size = HDBSCAN_MIN_CLUSTER_SIZE,
+def run_hdbscan(
+    embedding: np.ndarray,
+    branch: str,
+    fig_dir: Path,
+) -> tuple[np.ndarray, dict]:
+    """
+    Fit HDBSCAN, compute DBCV, extract stability scores and membership
+    probabilities, and save condensed tree + stability bar chart.
+
+    Returns (labels, validation_dict).
+    Validation dict keys:
+      n_clusters, noise_frac, dbcv,
+      persistence (per-cluster lambda-based stability, bigger = better),
+      probabilities (per-sample membership probability, 1.0 = core member)
+    """
+    mcs = HDBSCAN_MIN_CLUSTER_SIZE[branch]
+    t0  = time.time()
+
+    clusterer = hdbscan_pkg.HDBSCAN(
+        min_cluster_size = mcs,
         min_samples      = HDBSCAN_MIN_SAMPLES,
         metric           = "euclidean",
-    ).fit_predict(embedding)
-    print(f"   HDBSCAN → clusters: {m['n_clusters']}  noise: {m['noise_frac']:.3f}")
-    return labels
-
-
-# ===========================================================================
-# K-MEDOIDS (on nD embedding)
-# ===========================================================================
-
-def run_kmedoids(embedding: np.ndarray, branch: str) -> np.ndarray:
-    if not HAS_KMEDOIDS:
-        print(f"   K-Medoids skipped — scikit-learn-extra not installed")
-        return np.full(len(embedding), -1, dtype=int)
-
-    t0 = time.time()
-    km = KMedoids(
-        n_clusters   = K_MEDOIDS,
-        metric       = "euclidean",
-        init         = K_MEDOIDS_INIT,
-        random_state = RANDOM_STATE,
     )
-    labels = km.fit_predict(embedding)
+    clusterer.fit(embedding)
+    labels      = clusterer.labels_
+    probs       = clusterer.probabilities_
+    persistence = clusterer.cluster_persistence_   # lambda-based, bigger = better
+
+    m = _hdbscan_metrics(labels)
+
+    # DBCV
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        try:
+            dbcv = hdbscan_validity.validity_index(
+                embedding.astype(np.float64), labels
+            )
+        except Exception:
+            dbcv = np.nan
+
+    print(f"   HDBSCAN → clusters: {m['n_clusters']}  noise: {m['noise_frac']:.3f}"
+          f"  DBCV: {dbcv:+.3f}  ({_elapsed(t0)})")
+
+    # ── Condensed tree ────────────────────────────────────────────────
+    try:
+        fig, ax = plt.subplots(figsize=(10, 5))
+        clusterer.condensed_tree_.plot(
+            select_clusters=True,
+            selection_palette=plt.get_cmap("tab20").colors,
+            axis=ax,
+        )
+        ax.set_title(
+            f"{branch.upper()} — HDBSCAN Condensed Tree\n"
+            f"mcs={mcs}  clusters={m['n_clusters']}  DBCV={dbcv:+.3f}",
+            fontsize=9,
+        )
+        fig.tight_layout()
+        path = fig_dir / f"{branch}_hdbscan_condensed_tree.svg"
+        fig.savefig(path, format="svg", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"   Saved: {path.name}")
+    except Exception as e:
+        print(f"   Condensed tree plot failed: {e}")
+
+    # ── Stability bar chart ───────────────────────────────────────────
+    if len(persistence) > 0:
+        fig, ax = plt.subplots(figsize=(max(6, len(persistence) * 0.4), 4))
+        cluster_ids = list(range(len(persistence)))
+        bars = ax.bar(cluster_ids, persistence, color="#2196F3", alpha=0.8)
+        ax.set_xlabel("Cluster ID")
+        ax.set_ylabel("Stability (λ-based, bigger = more robust)")
+        ax.set_title(
+            f"{branch.upper()} — HDBSCAN Per-Cluster Stability\n"
+            f"Relative comparison: taller bars = more trustworthy clusters",
+            fontsize=9,
+        )
+        ax.grid(True, axis="y", alpha=0.3)
+        fig.tight_layout()
+        path = fig_dir / f"{branch}_hdbscan_stability.svg"
+        fig.savefig(path, format="svg", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"   Saved: {path.name}")
+
+    val = {
+        "n_clusters":   m["n_clusters"],
+        "noise_frac":   m["noise_frac"],
+        "dbcv":         dbcv,
+        "persistence":  persistence,
+        "probabilities": probs,
+    }
+    return labels, val
+
+
+# ===========================================================================
+# WARD HIERARCHICAL CLUSTERING (Mordred branch)
+# ===========================================================================
+
+def run_ward(
+    embedding: np.ndarray,
+    branch: str,
+    fig_dir: Path,
+) -> tuple[np.ndarray, dict]:
+    """
+    Ward hierarchical clustering on the nD UMAP embedding.
+
+    Cut level selected by silhouette sweep over k=2..WARD_K_MAX.
+    Saves: dendrogram SVG + silhouette sweep SVG.
+
+    Returns (labels, validation_dict).
+    Validation dict keys: k, silhouette, cophenetic_r
+    """
+    t0 = time.time()
+    print(f"   [Ward] Computing linkage on {embedding.shape[0]:,} × {embedding.shape[1]}D ...")
+
+    Z = linkage(embedding, method="ward", metric="euclidean")
+
+    # Cophenetic correlation — measures how well the dendrogram preserves distances
+    c, _ = cophenet(Z, pdist(embedding, metric="euclidean"))
+    print(f"   Cophenetic r = {c:.3f}")
+
+    # ── Silhouette sweep to select cut level ──────────────────────────
+    k_max   = min(WARD_K_MAX, len(embedding) - 1)
+    k_range = range(2, k_max + 1)
+    sil_scores = []
+    for k in k_range:
+        lbls = fcluster(Z, k, criterion="maxclust") - 1   # 0-indexed
+        try:
+            s = silhouette_score(embedding, lbls, metric="euclidean")
+        except Exception:
+            s = np.nan
+        sil_scores.append(s)
+
+    best_k = int(list(k_range)[int(np.nanargmax(sil_scores))])
+    labels = fcluster(Z, best_k, criterion="maxclust") - 1
+
+    sil = float(np.nanmax(sil_scores))
+    print(f"   Ward → k={best_k}  silhouette={sil:.3f}  ({_elapsed(t0)})")
+
+    # ── Figure 1: Dendrogram (truncated to top 40 merges) ─────────────
+    # Color threshold = midpoint of the merge that creates best_k clusters
+    thresh = float((Z[-(best_k), 2] + Z[-(best_k - 1), 2]) / 2) if best_k > 1 else Z[-1, 2]
+    fig, ax = plt.subplots(figsize=(12, 5))
+    dendrogram(Z, truncate_mode="lastp", p=40, ax=ax,
+               color_threshold=thresh, above_threshold_color="#AAAAAA")
+    ax.axhline(thresh, color="red", lw=1.2, linestyle="--", alpha=0.7,
+               label=f"Cut → k={best_k}")
+    ax.set_xlabel("Sample / merged cluster (count in brackets)")
+    ax.set_ylabel("Ward merge distance")
+    ax.set_title(
+        f"{branch.upper()} — Ward Dendrogram (top 40 merges)\n"
+        f"k={best_k} (silhouette-optimal)  |  cophenetic r={c:.3f}",
+        fontsize=9,
+    )
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    path = fig_dir / f"{branch}_ward_dendrogram.svg"
+    fig.savefig(path, format="svg", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"   Saved: {path.name}")
+
+    # ── Figure 2: Silhouette sweep ────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(list(k_range), sil_scores, "o-", color="#2196F3", lw=2, ms=4)
+    ax.axvline(best_k, color="red", lw=1.2, linestyle="--",
+               label=f"Selected k={best_k} (silhouette peak)")
+    for thresh_val, lbl in [(0.25, "weak"), (0.50, "ok"), (0.70, "good")]:
+        ax.axhline(thresh_val, color="grey", lw=0.7, linestyle=":")
+        ax.text(list(k_range)[0], thresh_val, f" {lbl}", va="bottom",
+                fontsize=7, color="grey")
+    ax.set_xlabel("Number of Ward clusters (k)")
+    ax.set_ylabel("Silhouette score")
+    ax.set_title(
+        f"{branch.upper()} — Ward cut level selection\n"
+        f"Silhouette sweep k=2..{k_max}",
+        fontsize=9,
+    )
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    path = fig_dir / f"{branch}_ward_silhouette.svg"
+    fig.savefig(path, format="svg", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"   Saved: {path.name}")
+
+    val = {
+        "k":            best_k,
+        "silhouette":   sil,
+        "cophenetic_r": c,
+    }
+    return labels, val
+
+
+# ===========================================================================
+# K-MEDOIDS (MAPchiral branch — fixed k=15, confirmed by prior Gap Statistic)
+# ===========================================================================
+
+def run_kmedoids(
+    embedding: np.ndarray,
+    branch: str,
+    fig_dir: Path,
+) -> tuple[np.ndarray, dict]:
+    """
+    Fit K-Medoids at K_MEDOIDS_K_FIXED with multiple initializations.
+    k=15 was selected by Gap Statistic (1-SE rule) in the prior analysis run
+    and is hardcoded here to avoid redundant computation.
+
+    Returns (labels, validation_dict).
+    Validation dict keys: k, silhouette, dbi, total_cost
+    """
+    if not HAS_KMEDOIDS:
+        print("   K-Medoids skipped — scikit-learn-extra not installed")
+        return np.full(len(embedding), -1, dtype=int), {}
+
+    k   = K_MEDOIDS_K_FIXED
+    t0  = time.time()
+    rng = np.random.default_rng(RANDOM_STATE)
+    print(f"   Fitting K-Medoids k={k} × {K_MEDOIDS_N_INIT} inits ...")
+
+    best_cost = np.inf
+    best_km   = None
+    for _ in range(K_MEDOIDS_N_INIT):
+        km = KMedoids(
+            n_clusters   = k,
+            metric       = "euclidean",
+            init         = K_MEDOIDS_INIT,
+            random_state = int(rng.integers(1_000_000)),
+        )
+        km.fit(embedding)
+        if km.inertia_ < best_cost:
+            best_cost = km.inertia_
+            best_km   = km
+
+    labels = best_km.labels_
+
     try:
         sil = silhouette_score(embedding, labels, metric="euclidean")
-        print(f"   K-Medoids (k={K_MEDOIDS}) → silhouette: {sil:.3f}  ({_elapsed(t0)})")
+        dbi = davies_bouldin_score(embedding, labels)
     except Exception:
-        print(f"   K-Medoids (k={K_MEDOIDS}) done  ({_elapsed(t0)})")
-    return labels
+        sil, dbi = np.nan, np.nan
+
+    print(f"   K-Medoids (k={k}) → cost={best_cost:.1f}  "
+          f"silhouette={sil:.3f}  DBI={dbi:.3f}  ({_elapsed(t0)})")
+
+    val = {
+        "k":          k,
+        "silhouette": sil,
+        "dbi":        dbi,
+        "total_cost": best_cost,
+    }
+    return labels, val
 
 
 # ===========================================================================
@@ -585,6 +812,7 @@ def save_figure(
     branch: str,
     fig_dir: Path,
     n_components_cluster: int,
+    k: int = None,
 ) -> None:
     """
     All figures use the 2D UMAP embedding for x/y axes.
@@ -599,7 +827,12 @@ def save_figure(
         note         = ""
     else:
         handles      = _scatter_labels(ax, emb2d, color_data)
-        method       = "HDBSCAN" if mode == "hdbscan" else f"K-Medoids (k={K_MEDOIDS})"
+        if mode == "hdbscan":
+            method = "HDBSCAN"
+        elif mode == "ward":
+            method = f"Ward (k={k})"
+        else:
+            method = f"K-Medoids (k={k})"
         title_suffix = method
         note         = f" [labels from {n_components_cluster}D embedding]"
 
@@ -667,12 +900,9 @@ def main() -> None:
     emb_2d_2d = run_umap(X_2d, 2, UMAP_BASE_PARAMS["2d"], "2d")
 
     print("\n  [2D] HDBSCAN:")
-    hdb_2d = run_hdbscan(emb_2d_2d, "2d")
+    hdb_2d, hdb_2d_val = run_hdbscan(emb_2d_2d, "2d", fig_dir)
 
-    print("\n  [2D] K-Medoids:")
-    km_2d  = run_kmedoids(emb_2d_2d, "2d")
-
-    n_components_2d = 2   # 2D is sufficient given 8D input
+    n_components_2d = 2   # 2D is sufficient given 6-feature panel; no secondary clustering
 
     # ------------------------------------------------------------------
     # Mordred branch — dimensionality sweep then final run
@@ -692,10 +922,10 @@ def main() -> None:
     hdb_labels_from_sweep = sweep_mordred[n_mordred]["labels"]
 
     print(f"\n  [Mordred] Final HDBSCAN on {n_mordred}D embedding:")
-    hdb_mordred = run_hdbscan(emb_mordred_nd, "mordred")
+    hdb_mordred, hdb_mordred_val = run_hdbscan(emb_mordred_nd, "mordred", fig_dir)
 
-    print(f"\n  [Mordred] K-Medoids on {n_mordred}D embedding:")
-    km_mordred  = run_kmedoids(emb_mordred_nd, "mordred")
+    print(f"\n  [Mordred] Ward hierarchical on {n_mordred}D embedding:")
+    ward_mordred, ward_mordred_val = run_ward(emb_mordred_nd, "mordred", fig_dir)
 
     # ------------------------------------------------------------------
     # MAPchiral branch — dimensionality sweep then final run
@@ -713,62 +943,77 @@ def main() -> None:
     emb_mapc_nd = sweep_mapc[n_mapc]["embedding"]
 
     print(f"\n  [MAPchiral] Final HDBSCAN on {n_mapc}D embedding:")
-    hdb_mapc = run_hdbscan(emb_mapc_nd, "mapchiral")
+    hdb_mapc, hdb_mapc_val = run_hdbscan(emb_mapc_nd, "mapchiral", fig_dir)
 
     print(f"\n  [MAPchiral] K-Medoids on {n_mapc}D embedding:")
-    km_mapc  = run_kmedoids(emb_mapc_nd, "mapchiral")
+    km_mapc, km_mapc_val = run_kmedoids(emb_mapc_nd, "mapchiral", fig_dir)
 
     # ------------------------------------------------------------------
     # Save per-branch CSVs
     # ------------------------------------------------------------------
     print(f"\n[Save] Writing CSVs ...")
 
-    def _save_branch_csv(name, emb2d, embnd, hdb, km):
+    def _save_branch_csv(name, emb2d, embnd, hdb, hdb_val,
+                         secondary=None, secondary_col=None):
         df = aligned_meta.copy()
         df["UMAP_1_2d"] = emb2d[:, 0]
         df["UMAP_2_2d"] = emb2d[:, 1]
         for i in range(embnd.shape[1]):
             df[f"UMAP_{i+1}_nd"] = embnd[:, i]
-        df["cluster_hdbscan"]  = hdb
-        df["cluster_kmedoids"] = km
+        df["cluster_hdbscan"]         = hdb
+        df["hdbscan_membership_prob"] = hdb_val.get("probabilities", np.nan)
+        if secondary is not None and secondary_col is not None:
+            df[secondary_col] = secondary
         path = OUTPUT_DIR / f"{name}_umap.csv"
         df.to_csv(path, index=False)
         print(f"   {path.name}  ({len(df):,} rows)")
 
-    _save_branch_csv("2d",        emb_2d_2d,    emb_2d_2d,    hdb_2d,      km_2d)
-    _save_branch_csv("mordred",   emb_mordred_2d, emb_mordred_nd, hdb_mordred, km_mordred)
-    _save_branch_csv("mapchiral", emb_mapc_2d,  emb_mapc_nd,  hdb_mapc,    km_mapc)
+    _save_branch_csv("2d",        emb_2d_2d,      emb_2d_2d,      hdb_2d,      hdb_2d_val)
+    _save_branch_csv("mordred",   emb_mordred_2d, emb_mordred_nd, hdb_mordred, hdb_mordred_val,
+                     secondary=ward_mordred,  secondary_col="cluster_ward")
+    _save_branch_csv("mapchiral", emb_mapc_2d,    emb_mapc_nd,    hdb_mapc,    hdb_mapc_val,
+                     secondary=km_mapc,       secondary_col="cluster_kmedoids")
 
     # ------------------------------------------------------------------
     # Figures (all use 2D embedding for x/y)
     # ------------------------------------------------------------------
     print(f"\n[Figures] ...")
-    for branch, emb2d, hdb, km, nc in [
-        ("2d",        emb_2d_2d,     hdb_2d,      km_2d,      n_components_2d),
-        ("mordred",   emb_mordred_2d, hdb_mordred, km_mordred, n_mordred),
-        ("mapchiral", emb_mapc_2d,   hdb_mapc,    km_mapc,    n_mapc),
-    ]:
-        save_figure(emb2d, sources,  "source",   branch, fig_dir, nc)
-        save_figure(emb2d, hdb,      "hdbscan",  branch, fig_dir, nc)
-        save_figure(emb2d, km,       "kmedoids", branch, fig_dir, nc)
+
+    # 2D — HDBSCAN only
+    save_figure(emb_2d_2d,     sources,      "source",  "2d",        fig_dir, n_components_2d)
+    save_figure(emb_2d_2d,     hdb_2d,       "hdbscan", "2d",        fig_dir, n_components_2d)
+
+    # Mordred — HDBSCAN + Ward
+    save_figure(emb_mordred_2d, sources,     "source",  "mordred",   fig_dir, n_mordred)
+    save_figure(emb_mordred_2d, hdb_mordred, "hdbscan", "mordred",   fig_dir, n_mordred)
+    save_figure(emb_mordred_2d, ward_mordred, "ward",   "mordred",   fig_dir, n_mordred,
+                k=ward_mordred_val.get("k"))
+
+    # MAPchiral — HDBSCAN + K-Medoids
+    save_figure(emb_mapc_2d,   sources,      "source",  "mapchiral", fig_dir, n_mapc)
+    save_figure(emb_mapc_2d,   hdb_mapc,     "hdbscan", "mapchiral", fig_dir, n_mapc)
+    save_figure(emb_mapc_2d,   km_mapc,      "kmedoids","mapchiral", fig_dir, n_mapc,
+                k=km_mapc_val.get("k"))
 
     # ------------------------------------------------------------------
     # Combined aligned metadata
     # ------------------------------------------------------------------
     combined = aligned_meta.copy()
     for col, vals in [
-        ("umap1_2d",             emb_2d_2d[:, 0]),
-        ("umap2_2d",             emb_2d_2d[:, 1]),
-        ("hdbscan_2d",           hdb_2d),
-        ("kmedoids_2d",          km_2d),
-        ("umap1_mordred",        emb_mordred_2d[:, 0]),
-        ("umap2_mordred",        emb_mordred_2d[:, 1]),
-        ("hdbscan_mordred",      hdb_mordred),
-        ("kmedoids_mordred",     km_mordred),
-        ("umap1_mapchiral",      emb_mapc_2d[:, 0]),
-        ("umap2_mapchiral",      emb_mapc_2d[:, 1]),
-        ("hdbscan_mapchiral",    hdb_mapc),
-        ("kmedoids_mapchiral",   km_mapc),
+        ("umap1_2d",                emb_2d_2d[:, 0]),
+        ("umap2_2d",                emb_2d_2d[:, 1]),
+        ("hdbscan_2d",              hdb_2d),
+        ("hdbscan_2d_prob",         hdb_2d_val.get("probabilities", np.nan)),
+        ("umap1_mordred",           emb_mordred_2d[:, 0]),
+        ("umap2_mordred",           emb_mordred_2d[:, 1]),
+        ("hdbscan_mordred",         hdb_mordred),
+        ("hdbscan_mordred_prob",    hdb_mordred_val.get("probabilities", np.nan)),
+        ("ward_mordred",            ward_mordred),
+        ("umap1_mapchiral",         emb_mapc_2d[:, 0]),
+        ("umap2_mapchiral",         emb_mapc_2d[:, 1]),
+        ("hdbscan_mapchiral",       hdb_mapc),
+        ("hdbscan_mapchiral_prob",  hdb_mapc_val.get("probabilities", np.nan)),
+        ("kmedoids_mapchiral",      km_mapc),
     ]:
         combined[col] = vals
     combined.to_csv(OUTPUT_DIR / "aligned_metadata.csv", index=False)
@@ -777,16 +1022,33 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Analysis report
     # ------------------------------------------------------------------
-    def _branch_summary(name, hdb, km, nc):
-        m = _hdbscan_metrics(hdb)
-        return [
+    def _branch_summary(name, hdb_val, secondary_val, nc):
+        lines = [
             f"  {name.upper()}:",
             f"    Clustering n_components : {nc}",
-            f"    HDBSCAN clusters        : {m['n_clusters']}",
-            f"    HDBSCAN noise fraction  : {m['noise_frac']:.3f}",
-            f"    K-Medoids k             : {K_MEDOIDS}",
-            "",
+            f"    HDBSCAN clusters        : {hdb_val.get('n_clusters', '?')}",
+            f"    HDBSCAN noise fraction  : {hdb_val.get('noise_frac', float('nan')):.3f}",
+            f"    HDBSCAN DBCV            : {hdb_val.get('dbcv', float('nan')):+.3f}",
+            f"    HDBSCAN stable clusters : {len(hdb_val.get('persistence', []))}  "
+            f"(λ-based, bigger = more robust)",
         ]
+        if name == "mordred":
+            lines += [
+                f"    Ward k (sil peak)       : {secondary_val.get('k', '?')}",
+                f"    Ward silhouette         : {secondary_val.get('silhouette', float('nan')):.3f}",
+                f"    Ward cophenetic r       : {secondary_val.get('cophenetic_r', float('nan')):.3f}",
+            ]
+        elif name == "mapchiral":
+            lines += [
+                f"    K-Medoids k (fixed)     : {secondary_val.get('k', '?')}",
+                f"    K-Medoids silhouette    : {secondary_val.get('silhouette', float('nan')):.3f}",
+                f"    K-Medoids DBI           : {secondary_val.get('dbi', float('nan')):.3f}",
+                f"    K-Medoids total cost    : {secondary_val.get('total_cost', float('nan')):.1f}",
+            ]
+        else:
+            lines.append("    Secondary clustering    : none (6-feature panel)")
+        lines.append("")
+        return lines
 
     lines = [
         "=" * 62,
@@ -802,19 +1064,22 @@ def main() -> None:
         "",
         "--- Branch Results ---",
     ]
-    lines += _branch_summary("2d",        hdb_2d,      km_2d,      n_components_2d)
-    lines += _branch_summary("mordred",   hdb_mordred, km_mordred, n_mordred)
-    lines += _branch_summary("mapchiral", hdb_mapc,    km_mapc,    n_mapc)
+    lines += _branch_summary("2d",        hdb_2d_val,      {},              n_components_2d)
+    lines += _branch_summary("mordred",   hdb_mordred_val, ward_mordred_val, n_mordred)
+    lines += _branch_summary("mapchiral", hdb_mapc_val,    km_mapc_val,     n_mapc)
     lines += [
         "--- Clustering ---",
-        "  HDBSCAN and K-Medoids run on nD UMAP embeddings (Euclidean).",
-        "  Figures show 2D UMAP coords; cluster labels are from nD embedding.",
+        "  2D:        HDBSCAN only",
+        "  Mordred:   HDBSCAN + Ward hierarchical (k by silhouette sweep)",
+        "  MAPchiral: HDBSCAN + K-Medoids (k=15, confirmed by prior Gap Statistic)",
+        "  All clustering on nD UMAP embeddings (Euclidean).",
+        "  Figures show 2D UMAP coords; cluster labels from nD embedding.",
         "",
         "--- Output Files ---",
         "  2d_umap.csv  |  mordred_umap.csv  |  mapchiral_umap.csv",
         "  aligned_metadata.csv",
         "  mordred_sweep_report.txt  |  mapchiral_sweep_report.txt",
-        "  figures/{branch}_umap_{source|hdbscan|kmedoids}.svg  (9 figures)",
+        "  figures/  (2D: source+hdbscan; Mordred: +ward; MAPchiral: +kmedoids)",
         "=" * 62,
     ]
     report_text = "\n".join(lines)

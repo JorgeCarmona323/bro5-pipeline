@@ -35,10 +35,17 @@ ANALYSIS_DIR  = Path("outputs/analysis/2026-04-06")
 OUTPUT_DIR    = Path("outputs/tuning/2026-04-06")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-MCS_RANGE     = list(range(50, 501, 50))   # 50 → 500 in steps of 50
+MCS_RANGE     = list(range(50, 201, 10))   # 50 → 200 in steps of 10
 MIN_SAMPLES   = 10                          # fixed throughout
 
+ALIGNED_CSV   = ANALYSIS_DIR / "aligned_metadata.csv"
+
 BRANCHES = {
+    "2d": {
+        "csv":     ALIGNED_CSV,
+        "nd_cols": ["umap1_2d", "umap2_2d"],                  # 2D viz coords
+        "color":   "#4CAF50",
+    },
     "mordred": {
         "csv":     ANALYSIS_DIR / "mordred_umap.csv",
         "nd_cols": [f"UMAP_{i}_nd" for i in range(1, 11)],   # 10D
@@ -168,7 +175,7 @@ def make_plot(df: pd.DataFrame, branch: str, color: str,
         ax.plot(mcs, vals, color=color, lw=2, marker="o", ms=5)
         ax.set_xlabel("min_cluster_size")
         ax.set_ylabel(ylabel)
-        ax.xaxis.set_major_locator(ticker.MultipleLocator(50))
+        ax.xaxis.set_major_locator(ticker.MultipleLocator(20))
         ax.grid(True, alpha=0.3)
 
         if mark_opt:

@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 ROOT      = Path(__file__).resolve().parent.parent
 ALIGNED   = ROOT / "outputs/analysis/2026-04-06/aligned_metadata.csv"
 MAPC_META = ROOT / "outputs/mapchiral/2026-04-06/mapchiral_metadata.csv"
-FIG_DIR   = ROOT / "outputs/analysis/2026-04-06/figures"
+FIG_DIR   = ROOT / "outputs/analysis/2026-04-21/figures"
 
 # ── Overlay marker styles ──────────────────────────────────────────────────
 COLOR_REF  = "#333333"   # dark grey  — references
@@ -157,7 +157,7 @@ def main():
         emb_cols    = ["umap1_mordred", "umap2_mordred"],
         cluster_col = "hdbscan_mordred",
         branch      = "Mordred",
-        method_label= "HDBSCAN  60 clusters · DBCV = +0.531",
+        method_label= "HDBSCAN  35 clusters · DBCV = +0.511",
         fig_name    = "mordred_combined_hdbscan.svg")
 
     make_combined(df,
